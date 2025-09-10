@@ -1,4 +1,3 @@
-
 export enum GameState {
   START = 'START',
   BRIEFING = 'BRIEFING',
@@ -7,11 +6,14 @@ export enum GameState {
   RESOLVED = 'RESOLVED',
 }
 
+export type Difficulty = 'Easy' | 'Medium' | 'Hard';
+
 export interface Suspect {
   name: string;
   motive: string;
   description: string;
   statement: string;
+  portraitUrl?: string;
 }
 
 export interface Case {
@@ -26,4 +28,11 @@ export interface Case {
 export interface Resolution {
   isCorrect: boolean;
   resolutionText: string;
+}
+
+export interface TimelineEvent {
+  id: number;
+  type: 'EVENT' | 'CLUE';
+  source: string;
+  text: string;
 }

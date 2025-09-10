@@ -1,6 +1,8 @@
+import { GameState } from "../types";
 
 const sounds = {
     ambience: 'https://actions.google.com/sounds/v1/ambiences/city_street_with_carriages.ogg',
+    fireplace: 'https://actions.google.com/sounds/v1/ambiences/fire_crackling.ogg',
     clock: 'https://actions.google.com/sounds/v1/alarms/big_ben_chime.ogg',
     innis: 'https://actions.google.com/sounds/v1/animals/dog_whining.ogg',
     clue: 'https://actions.google.com/sounds/v1/ui/page_turn.ogg',
@@ -13,7 +15,7 @@ class SoundService {
     private audioElements: { [key: string]: HTMLAudioElement } = {};
     private isMuted = true;
     private isInitialized = false;
-    private ambienceShouldBePlaying = false;
+    private currentAmbientKey: string | null = null;
 
     private initialize() {
         if (this.isInitialized || typeof window === 'undefined') return;
@@ -21,11 +23,11 @@ class SoundService {
             Object.entries(sounds).forEach(([key, src]) => {
                 const audio = new Audio(src);
                 audio.preload = 'auto';
-                if (key === 'ambience') {
+                if (key === 'ambience' || key === 'fireplace') {
                     audio.loop = true;
-                    audio.volume = 0.3; 
+                    audio.volume = key === 'ambience' ? 0.3 : 0.5; 
                 } else {
-                    audio.volume = 0.7;
+                    audio.volume = 1.0;
                 }
                 this.audioElements[key] = audio;
             });
@@ -41,10 +43,9 @@ class SoundService {
         const audio = this.audioElements[key];
         if (audio) {
             audio.loop = loop;
-            if (!loop) {
-              audio.currentTime = 0;
+            if (audio.paused) {
+                 audio.play().catch(e => console.error(`Error playing sound: ${key}`, e));
             }
-            audio.play().catch(e => console.error(`Error playing sound: ${key}`, e));
         }
     }
 
@@ -57,14 +58,28 @@ class SoundService {
         }
     }
 
-    playAmbience() { 
-        this.ambienceShouldBePlaying = true;
-        if (this.audioElements.ambience?.paused) this.play('ambience', true); 
+    playGameStateAmbience(gameState: GameState) {
+        if (this.currentAmbientKey) {
+            this.stop(this.currentAmbientKey);
+            this.currentAmbientKey = null;
+        }
+
+        let soundToPlay: string | null = null;
+        switch(gameState) {
+            case GameState.INVESTIGATING:
+                soundToPlay = 'ambience';
+                break;
+            case GameState.ACCUSING:
+                soundToPlay = 'fireplace';
+                break;
+        }
+        
+        if (soundToPlay) {
+            this.currentAmbientKey = soundToPlay;
+            this.play(soundToPlay, true);
+        }
     }
-    stopAmbience() { 
-        this.ambienceShouldBePlaying = false;
-        this.stop('ambience'); 
-    }
+
     playClick() { this.play('click'); }
     playClue() { this.play('clue'); }
     playInnis() { this.play('innis'); }
@@ -84,8 +99,11 @@ class SoundService {
         this.isMuted = !this.isMuted;
         this.updateMuteState();
 
-        if (!this.isMuted && this.ambienceShouldBePlaying && this.audioElements.ambience?.paused) {
-            this.play('ambience', true);
+        if (!this.isMuted && this.currentAmbientKey) {
+             const audio = this.audioElements[this.currentAmbientKey];
+             if (audio?.paused) {
+                this.play(this.currentAmbientKey, true);
+             }
         }
         
         return this.isMuted;
