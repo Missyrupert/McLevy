@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>McLevy's Conundrum</title>
+    <link rel="icon" href="data:,">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -19,9 +20,8 @@
   <script type="importmap">
 {
   "imports": {
-    "react/": "https://aistudiocdn.com/react@^19.1.1/",
     "react": "https://aistudiocdn.com/react@^19.1.1",
-    "react-dom/": "https://aistudiocdn.com/react-dom@^19.1.1/",
+    "react-dom/client": "https://aistudiocdn.com/react-dom@^19.1.1/client",
     "@google/genai": "https://aistudiocdn.com/@google/genai@^1.19.0"
   }
 }
@@ -30,6 +30,965 @@
   <body>
     <div id="root"></div>
     <script src="https://unpkg.com/@babel/standalone@7.24.9/babel.min.js"></script>
-    <script type="text/babel" data-type="module" data-presets="react,typescript" src="/index.tsx"></script>
+    <script type="text/babel" data-type="module" data-presets="react,typescript">
+import React, { useState, useCallback, useEffect } from 'react';
+import ReactDOM from 'react-dom/client';
+import { GoogleGenAI, Type } from "@google/genai";
+
+// --- Consolidated Application Code ---
+
+// --- From types.ts ---
+var GameState;
+(function (GameState) {
+    GameState["START"] = "START";
+    GameState["BRIEFING"] = "BRIEFING";
+    GameState["INVESTIGATING"] = "INVESTIGATING";
+    GameState["ACCUSING"] = "ACCUSING";
+    GameState["RESOLVED"] = "RESOLVED";
+})(GameState || (GameState = {}));
+
+// --- From services/soundService.ts ---
+const soundService = new (class SoundService {
+    audioElements = {};
+    isMuted = true;
+    isInitialized = false;
+    currentAmbientKey = null;
+    sounds = {
+        ambience: 'https://actions.google.com/sounds/v1/ambiences/city_street_with_carriages.ogg',
+        fireplace: 'https://actions.google.com/sounds/v1/ambiences/fire_crackling.ogg',
+        clock: 'https://actions.google.com/sounds/v1/alarms/big_ben_chime.ogg',
+        innis: 'https://actions.google.com/sounds/v1/animals/dog_whining.ogg',
+        clue: 'https://actions.google.com/sounds/v1/ui/page_turn.ogg',
+        click: 'https://actions.google.com/sounds/v1/ui/button_press.ogg',
+        success: 'https://actions.google.com/sounds/v1/emergency/police_whistle.ogg',
+        failure: 'https://actions.google.com/sounds/v1/human_sounds/sigh.ogg',
+    };
+
+    initialize() {
+        if (this.isInitialized || typeof window === 'undefined') return;
+        try {
+            Object.entries(this.sounds).forEach(([key, src]) => {
+                const audio = new Audio(src);
+                audio.preload = 'auto';
+                if (key === 'ambience' || key === 'fireplace') {
+                    audio.loop = true;
+                    audio.volume = key === 'ambience' ? 0.3 : 0.5;
+                } else {
+                    audio.volume = 1.0;
+                }
+                this.audioElements[key] = audio;
+            });
+            this.updateMuteState();
+            this.isInitialized = true;
+        } catch (e) {
+            console.error("Failed to initialize audio elements.", e);
+        }
+    }
+
+    play(key, loop = false) {
+        if (!this.isInitialized || this.isMuted) return;
+        const audio = this.audioElements[key];
+        if (audio) {
+            audio.loop = loop;
+            if (audio.paused) {
+                 audio.play().catch(e => console.error(`Error playing sound: ${key}`, e));
+            }
+        }
+    }
+
+    stop(key) {
+        if (!this.isInitialized) return;
+        const audio = this.audioElements[key];
+        if (audio && !audio.paused) {
+            audio.pause();
+            audio.currentTime = 0;
+        }
+    }
+
+    playGameStateAmbience(gameState) {
+        if (this.currentAmbientKey) {
+            this.stop(this.currentAmbientKey);
+            this.currentAmbientKey = null;
+        }
+
+        let soundToPlay = null;
+        switch(gameState) {
+            case GameState.INVESTIGATING:
+                soundToPlay = 'ambience';
+                break;
+            case GameState.ACCUSING:
+                soundToPlay = 'fireplace';
+                break;
+        }
+        
+        if (soundToPlay) {
+            this.currentAmbientKey = soundToPlay;
+            this.play(soundToPlay, true);
+        }
+    }
+
+    playClick() { this.play('click'); }
+    playClue() { this.play('clue'); }
+    playInnis() { this.play('innis'); }
+    playSuccess() { this.play('success'); }
+    playFailure() { this.play('failure'); }
+    playClock() { this.play('clock'); }
+
+    updateMuteState() {
+        if (!this.isInitialized) return;
+        Object.values(this.audioElements).forEach(audio => {
+            audio.muted = this.isMuted;
+        });
+    }
+
+    toggleMute() {
+        if (!this.isInitialized) this.initialize();
+        this.isMuted = !this.isMuted;
+        this.updateMuteState();
+
+        if (!this.isMuted && this.currentAmbientKey) {
+             const audio = this.audioElements[this.currentAmbientKey];
+             if (audio?.paused) {
+                this.play(this.currentAmbientKey, true);
+             }
+        }
+        
+        return this.isMuted;
+    }
+    
+    getIsMuted() {
+        return this.isMuted;
+    }
+})();
+
+// --- From services/geminiService.ts ---
+let geminiAiClient = null;
+
+const getAiClient = () => {
+    if (geminiAiClient) {
+        return geminiAiClient;
+    }
+    if (!process.env.API_KEY) {
+        throw new Error("API_KEY environment variable not set. The application cannot connect to Google AI services without it. Please ensure the key is configured in your execution environment.");
+    }
+    geminiAiClient = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    return geminiAiClient;
+};
+
+
+const backgroundImageCache = new Map();
+
+const caseSchema = {
+    type: Type.OBJECT,
+    properties: {
+        title: { type: Type.STRING, description: "A catchy, noir-style title for the case." },
+        victim: { type: Type.STRING, description: "The name and occupation of the victim." },
+        location: { type: Type.STRING, description: "The specific location in 19th-century Edinburgh where the crime occurred." },
+        summary: { type: Type.STRING, description: "A one-paragraph summary of the crime scene and initial situation, written in the vernacular of the McLevy series." },
+        suspects: {
+            type: Type.ARRAY,
+            items: {
+                type: Type.OBJECT,
+                properties: {
+                    name: { type: Type.STRING, description: "The full name of the suspect." },
+                    description: { type: Type.STRING, description: "A one-sentence physical or personality description of the suspect." },
+                    motive: { type: Type.STRING, description: "A plausible motive for this suspect." },
+                    statement: { type: Type.STRING, description: "A brief alibi or statement from the suspect, in quotes." }
+                },
+                required: ['name', 'description', 'motive', 'statement']
+            },
+            description: "An array of exactly three suspects."
+        },
+        culprit: { type: Type.STRING, description: "The name of the true culprit from the list of suspects." }
+    },
+    required: ['title', 'victim', 'location', 'summary', 'suspects', 'culprit']
+};
+
+const generateNewCase = async () => {
+    const ai = getAiClient();
+    const prompt = `You are a writer for the BBC radio drama 'McLevy'. Generate a new, brief murder mystery case for Detective McLevy in 19th-century Edinburgh. Use the vernacular and style of the show. The case should have a victim, a location, and a mysterious circumstance. Create exactly three plausible suspects. For each suspect, provide their name, a brief physical/personality description, a plausible motive, and a short statement or alibi. Finally, secretly decide which one is the true culprit.`;
+
+    const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt,
+        config: {
+            responseMimeType: "application/json",
+            responseSchema: caseSchema,
+            temperature: 1.0,
+        },
+    });
+
+    try {
+        const jsonText = response.text.trim();
+        const newCase = JSON.parse(jsonText);
+        if (newCase.suspects.length !== 3) {
+            throw new Error("Generated case does not have exactly 3 suspects.");
+        }
+        return newCase;
+    } catch (e) {
+        console.error("Failed to parse case from Gemini:", response.text, e);
+        throw new Error("The Crown's witnesses are speakin' in tongues. Couldna generate a proper case.");
+    }
+};
+
+const generateSuspectPortrait = async (description) => {
+    const ai = getAiClient();
+    const prompt = `A character portrait of a person in Victorian Edinburgh, Scotland. The person is described as: "${description}". The style should be a gritty, realistic, slightly faded 19th-century photograph or oil painting. Close-up on the face, shoulders up. No text, watermarks, or frames.`;
+
+    try {
+        const response = await ai.models.generateImages({
+            model: 'imagen-4.0-generate-001',
+            prompt: prompt,
+            config: {
+                numberOfImages: 1,
+                outputMimeType: 'image/jpeg',
+                aspectRatio: '4:3',
+            },
+        });
+
+        if (response.generatedImages && response.generatedImages.length > 0) {
+            const base64ImageBytes = response.generatedImages[0].image.imageBytes;
+            return `data:image/jpeg;base64,${base64ImageBytes}`;
+        } else {
+            throw new Error("No image was generated.");
+        }
+    } catch (e) {
+        console.error("Failed to generate suspect portrait:", e);
+        throw new Error("The artist's hand is unsteady. Couldna sketch the suspect.");
+    }
+};
+
+const generateBackgroundImage = async (gameState) => {
+    if (backgroundImageCache.has(gameState)) {
+        return backgroundImageCache.get(gameState);
+    }
+    
+    const ai = getAiClient();
+    let prompt = '';
+    switch (gameState) {
+        case 'INVESTIGATING':
+            prompt = "Ultra-realistic, cinematic 16:9 photograph of a deserted, narrow cobblestone close in Victorian Edinburgh, slick with recent rain that reflects the hazy glow of a single gas lamp. Thick, swirling fog obscures the end of the alley, creating a sense of claustrophobia and hidden danger. Long, distorted shadows stretch from unseen corners. The atmosphere is heavy with suspense and the cold damp of the Scottish night.";
+            break;
+        case 'ACCUSING':
+            prompt = "Ultra-realistic, cinematic 16:9 photograph of the interior of a dimly lit, wood-paneled Victorian drawing-room. A large fireplace roars on one side, casting flickering, dramatic light and deep, dancing shadows across the room. The air is thick with tension. An ornate mahogany desk is covered in books and papers. The focus is on the oppressive, scholarly atmosphere, a room where secrets are held and forcefully revealed.";
+            break;
+        case 'RESOLVED':
+            prompt = "Ultra-realistic, cinematic 16:9 photograph of a breathtaking sunrise over Edinburgh from Calton Hill. The first golden rays of dawn slice through the lifting morning mist, illuminating the city's iconic monuments in sharp relief. The sky is a soft palette of pinks and blues, signaling a new day and the restoration of order. The overall feeling is one of calm, clarity, and hard-won peace.";
+            break;
+        case 'START':
+        default:
+            prompt = "Ultra-realistic, cinematic 16:9 photograph of the Edinburgh skyline in the 1880s at twilight. Edinburgh Castle looms on its rock, a dark, imposing silhouette against a bruised purple and orange sky. In the foreground, the labyrinthine streets of the Old Town are shrouded in a low-lying mist, with the warm, inviting glow of gaslights just beginning to pierce the gloom. The image should feel vast, mysterious, and full of untold stories.";
+            break;
+    }
+
+    try {
+        const response = await ai.models.generateImages({
+            model: 'imagen-4.0-generate-001',
+            prompt: prompt,
+            config: {
+                numberOfImages: 1,
+                outputMimeType: 'image/jpeg',
+                aspectRatio: '16:9',
+            },
+        });
+
+        if (response.generatedImages && response.generatedImages.length > 0) {
+            const base64ImageBytes = response.generatedImages[0].image.imageBytes;
+            const imageUrl = `data:image/jpeg;base64,${base64ImageBytes}`;
+            backgroundImageCache.set(gameState, imageUrl);
+            return imageUrl;
+        } else {
+            throw new Error("No background image was generated.");
+        }
+    } catch (e) {
+        console.error("Failed to generate background image:", e);
+        throw new Error("The city's visage remains hidden in the haar.");
+    }
+};
+
+const investigateAction = async (caseDetails, action, difficulty) => {
+    const ai = getAiClient();
+    let actionPreamble = `Detective McLevy decides to: "${action}".`;
+
+    if (action === "Confront Dewi MacOlacost") {
+        actionPreamble = `Detective McLevy decides to confront his unsavoury but sometimes useful informant, Dewi MacOlacost. Dewi is a nasty piece of work and enjoys watching McLevy squirm. His information might be a genuine clue, a misleading statement, or a cryptic insult.`;
+    }
+
+    let clueComplexityInstruction = "The clue should point towards one of the suspects without being definitive.";
+    switch (difficulty) {
+        case 'Easy':
+            clueComplexityInstruction = "The clue should be a direct and obvious hint that strongly points towards one of the suspects.";
+            break;
+        case 'Hard':
+            clueComplexityInstruction = "The clue should be very cryptic and indirect. It might subtly implicate one suspect, cast doubt on an alibi, or connect two seemingly unrelated facts, but should not be an obvious pointer.";
+            break;
+    }
+
+    const prompt = `You are a writer for the BBC radio drama 'McLevy'.
+    Case Details: ${JSON.stringify(caseDetails)}
+    ${actionPreamble}
+    Write a short, atmospheric paragraph (under 80 words) describing the encounter or what he finds. This description may include a direct quote from one of the suspects or from Dewi MacOlacost himself. Reveal one single, concise clue. ${clueComplexityInstruction} Use the show's vernacular.
+    If the description includes a quote from a suspect, identify them by their full name in the 'speaker' field. Do not identify Dewi as a speaker in the JSON response.
+    Do not solve the case.
+    `;
+
+    const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt,
+        config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                    description: { type: Type.STRING, description: "The atmospheric description of McLevy's action. This may include a direct quote." },
+                    clue: { type: Type.STRING, description: "A single, concise clue that has been discovered." },
+                    speaker: { type: Type.STRING, description: "If the description contains a quote from one of the suspects, this is their full name. Otherwise, this field should be omitted." }
+                },
+                required: ['description', 'clue']
+            }
+        }
+    });
+
+    try {
+        const jsonText = response.text.trim();
+        return JSON.parse(jsonText);
+    } catch (e) {
+        console.error("Failed to parse investigation result:", response.text, e);
+        throw new Error("The fog is too thick, even for me. Couldna get a clear answer.");
+    }
+};
+
+const getInnisHint = async (caseDetails, difficulty) => {
+    const ai = getAiClient();
+    let hintComplexityInstruction = "It should be a subtle, animal-level observation that provides a clue."; // Medium default
+    switch (difficulty) {
+        case 'Easy':
+            hintComplexityInstruction = "It should be an obvious, animal-level observation that clearly points to one suspect (e.g., the smell of their perfume on an object).";
+            break;
+        case 'Hard':
+            hintComplexityInstruction = "It should be a highly cryptic, animal-level observation that is difficult to interpret but provides a vital link if understood correctly (e.g., a reaction to a specific word or location).";
+            break;
+    }
+    
+    const prompt = `You are a writer for the BBC radio drama 'McLevy'.
+    Case Details: ${JSON.stringify(caseDetails)}
+    McLevy's trusty brindle whippet, Innis, has noticed something others have missed.
+    Describe in one cryptic sentence what Innis has found. ${hintComplexityInstruction} Use the show's vernacular.
+    `;
+
+     const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt,
+        config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                    hint: { type: Type.STRING, description: "The cryptic, one-sentence hint from Innis." }
+                },
+                required: ['hint']
+            }
+        }
+    });
+
+    try {
+        const jsonText = response.text.trim();
+        return JSON.parse(jsonText);
+    } catch (e) {
+        console.error("Failed to parse Innis' hint:", response.text, e);
+        throw new Error("The wee dog's keepin' his secrets today.");
+    }
+};
+
+const resolveCase = async (caseDetails, accusedSuspectName) => {
+    const ai = getAiClient();
+    const isCorrect = accusedSuspectName === caseDetails.culprit;
+
+    const prompt = `You are a writer for the BBC radio drama 'McLevy'.
+    Case Details: ${JSON.stringify(caseDetails)}
+    The actual culprit is: ${caseDetails.culprit}.
+    McLevy has accused: ${accusedSuspectName}.
+    
+    Write a concluding narrative paragraph.
+    If McLevy's accusation is correct (${isCorrect}), describe his triumphant deduction, explaining the final piece of the puzzle that confirmed his suspicion.
+    If the accusation is wrong, describe his quiet frustration as the real culprit is revealed through some other means, a confession or another's testimony.
+    The tone should be final and in the style of the show.`;
+
+    const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt,
+    });
+
+    return {
+        isCorrect,
+        resolutionText: response.text
+    };
+};
+
+// --- From components/Loader.tsx ---
+const Loader = ({ message }) => {
+  return (
+    <div className="absolute inset-0 bg-slate-900 bg-opacity-80 flex flex-col items-center justify-center z-50 backdrop-blur-sm">
+      <div className="w-16 h-16 border-4 border-dashed rounded-full animate-spin border-purple-400"></div>
+      <p className="text-white text-xl mt-4 font-serif-display">{message}</p>
+    </div>
+  );
+};
+
+// --- From components/InnisCompanion.tsx ---
+const InnisCompanion = ({ onAskInnis, disabled }) => {
+    return (
+        <div className="bg-gradient-to-tr from-amber-900 via-stone-700 to-amber-800 p-4 rounded-lg shadow-lg text-center mt-6">
+            <div className="flex items-center justify-center space-x-4">
+                 <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 text-yellow-50 opacity-80" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M10.435 7.075 12 12l4 4M21.75 12a9.75 9.75 0 1 1-19.5 0 9.75 9.75 0 0 1 19.5 0Z" />
+                    <path d="M12 17.25c-2.195 0-4.22-1.002-5.615-2.625" />
+                    <path d="m14 7-1-1" />
+                    <path d="m10 7 1-1" />
+                    <path d="M12 7.25c-3.15 0-6 1.8-6 4.25" />
+                    <path d="M12 7.25c3.15 0 6 1.8 6 4.25" />
+                 </svg>
+                <div>
+                    <h3 className="font-serif-display text-2xl text-yellow-50">Innis is waiting...</h3>
+                    <p className="text-sm text-yellow-100 italic">The wee beast has a nose for trouble.</p>
+                </div>
+            </div>
+            <button
+                onClick={onAskInnis}
+                disabled={disabled}
+                className="mt-4 w-full bg-yellow-200 hover:bg-yellow-300 text-stone-800 font-bold py-2 px-4 rounded-lg shadow-md transition-all duration-300 transform hover:scale-105 disabled:bg-gray-600 disabled:text-gray-400 disabled:cursor-not-allowed disabled:scale-100"
+            >
+                Ask Innis for a Clue
+            </button>
+        </div>
+    );
+};
+
+// --- From components/Modal.tsx ---
+const Modal = ({ title, children, onClose, maxWidth = 'max-w-2xl' }) => {
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
+      <div className={`bg-slate-800 rounded-lg shadow-2xl p-6 border border-purple-500 w-full ${maxWidth}`}>
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-3xl font-serif-display text-purple-300">{title}</h2>
+          {onClose && (
+            <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl">&times;</button>
+          )}
+        </div>
+        <div>{children}</div>
+      </div>
+    </div>
+  );
+};
+
+// --- From components/SoundControl.tsx ---
+const SoundControl = () => {
+    const [isMuted, setIsMuted] = useState(soundService.getIsMuted());
+
+    const handleToggleMute = useCallback(() => {
+        const newMuteState = soundService.toggleMute();
+        setIsMuted(newMuteState);
+    }, []);
+
+    return (
+        <button
+            onClick={handleToggleMute}
+            className="fixed bottom-4 right-4 bg-purple-900/50 hover:bg-purple-800/80 text-white p-3 rounded-full shadow-lg transition-colors backdrop-blur-sm z-50 focus:outline-none focus:ring-2 focus:ring-purple-400"
+            aria-label={isMuted ? "Unmute sounds" : "Mute sounds"}
+        >
+            {isMuted ? (
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15zM17 14l4-4m-4 0l4 4" />
+                </svg>
+            ) : (
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.536 8.464a5 5 0 010 7.072M17 4v16M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                </svg>
+            )}
+        </button>
+    );
+};
+
+// --- From App.tsx ---
+const App = () => {
+    const [gameState, setGameState] = useState(GameState.START);
+    const [difficulty, setDifficulty] = useState(null);
+    const [backgroundUrl, setBackgroundUrl] = useState('');
+    const [currentCase, setCurrentCase] = useState(null);
+    const [timeline, setTimeline] = useState([]);
+    const [activeEventId, setActiveEventId] = useState(null);
+    const [currentLog, setCurrentLog] = useState("The gas lamps of Edinburgh hiss in the haar. Another soul has met a grim end.");
+    const [currentSpeaker, setCurrentSpeaker] = useState(null);
+    const [isLoading, setIsLoading] = useState(false);
+    const [loadingMessage, setLoadingMessage] = useState('');
+    const [resolution, setResolution] = useState(null);
+    const [error, setError] = useState(null);
+    const [investigationInput, setInvestigationInput] = useState('');
+
+
+    const handleApiError = (err) => {
+        const message = err instanceof Error ? err.message : "An unknown error occurred.";
+        setError(message);
+        setIsLoading(false);
+    };
+
+    useEffect(() => {
+        const updateVisualsAndSound = async () => {
+            try {
+                if (!backgroundUrl) {
+                     setBackgroundUrl('data:image/gif;base64,R0lGODlhAQABAIAAAAUEBAAAACwAAAAAAQABAAACAkQBADs=');
+                }
+                const imageUrl = await generateBackgroundImage(gameState);
+                setBackgroundUrl(imageUrl);
+            } catch (err) {
+                console.error("Failed to update background:", err);
+                handleApiError(err);
+            }
+            soundService.playGameStateAmbience(gameState);
+        };
+        updateVisualsAndSound();
+    }, [gameState]);
+
+    const startNewCase = useCallback(async (selectedDifficulty) => {
+        setDifficulty(selectedDifficulty);
+        soundService.playClick();
+        setLoadingMessage("Consultin' wi' the powers that be...");
+        setIsLoading(true);
+        setError(null);
+        setResolution(null);
+        try {
+            const newCase = await generateNewCase();
+            setCurrentCase(newCase);
+            const initialTimeline = [{
+                id: 1,
+                type: 'EVENT',
+                source: 'Case Briefing',
+                text: newCase.summary,
+            }];
+            setTimeline(initialTimeline);
+            setActiveEventId(1);
+
+            setLoadingMessage("Sketchin' the persons of interest...");
+            const suspectsWithPortraits = await Promise.all(
+                newCase.suspects.map(async (suspect) => {
+                    const portraitUrl = await generateSuspectPortrait(suspect.description);
+                    return { ...suspect, portraitUrl };
+                })
+            );
+            
+            const caseWithPortraits = { ...newCase, suspects: suspectsWithPortraits };
+            setCurrentCase(caseWithPortraits);
+
+            setCurrentLog(newCase.summary);
+            setCurrentSpeaker(null);
+            setGameState(GameState.INVESTIGATING);
+        } catch (err) {
+            handleApiError(err);
+        } finally {
+            setIsLoading(false);
+        }
+    }, []);
+
+    const handleInvestigation = useCallback(async (action) => {
+        if (!currentCase || !difficulty) return;
+        soundService.playClick();
+        setLoadingMessage("Poundin' the cobblestones...");
+        setIsLoading(true);
+        setError(null);
+        try {
+            const result = await investigateAction(currentCase, action, difficulty);
+            setCurrentLog(result.description);
+             if (result.speaker) {
+                setCurrentSpeaker(result.speaker);
+            } else {
+                setCurrentSpeaker(null);
+            }
+            const newEvent = {
+                id: timeline.length + 1,
+                type: 'CLUE',
+                source: 'Investigation',
+                text: result.clue,
+            };
+            setTimeline(prev => [...prev, newEvent]);
+            setActiveEventId(newEvent.id);
+            soundService.playClue();
+        } catch (err) {
+            handleApiError(err);
+        } finally {
+            setIsLoading(false);
+        }
+    }, [currentCase, timeline, difficulty]);
+
+    const handleInvestigationSubmit = (e) => {
+        e.preventDefault();
+        if (investigationInput.trim() && !isLoading) {
+            handleInvestigation(investigationInput.trim());
+            setInvestigationInput('');
+        }
+    };
+
+    const handleAskInnis = useCallback(async () => {
+        if (!currentCase || !difficulty) return;
+        soundService.playInnis();
+        setLoadingMessage("The wee dog is sniffin' the air...");
+        setIsLoading(true);
+        setError(null);
+        try {
+            const result = await getInnisHint(currentCase, difficulty);
+            const hintText = `Innis gives a low growl and nudges your hand, seeming to say: "${result.hint}"`;
+            setCurrentLog(hintText);
+            setCurrentSpeaker(null);
+            const newEvent = {
+                id: timeline.length + 1,
+                type: 'CLUE',
+                source: "Innis's Nose",
+                text: result.hint,
+            };
+            setTimeline(prev => [...prev, newEvent]);
+            setActiveEventId(newEvent.id);
+            soundService.playClue();
+        } catch (err) {
+            handleApiError(err);
+        } finally {
+            setIsLoading(false);
+        }
+    }, [currentCase, timeline, difficulty]);
+
+    const handleAccuse = useCallback(async (suspect) => {
+        if (!currentCase) return;
+        soundService.playClick();
+        setLoadingMessage("The net draws tight...");
+        setIsLoading(true);
+        setError(null);
+        try {
+            const result = await resolveCase(currentCase, suspect.name);
+            setResolution(result);
+            setGameState(GameState.RESOLVED);
+        } catch (err) {
+            handleApiError(err);
+        } finally {
+            setIsLoading(false);
+        }
+    }, [currentCase]);
+    
+    const handleOpenAccusationModal = () => {
+        soundService.playClick();
+        setGameState(GameState.ACCUSING);
+    };
+
+    const toggleEventDetails = (id) => {
+        setActiveEventId(currentId => (currentId === id ? null : id));
+    };
+
+    const resetGame = () => {
+        soundService.playClick();
+        setGameState(GameState.START);
+        setCurrentCase(null);
+        setTimeline([]);
+        setResolution(null);
+        setError(null);
+        setDifficulty(null);
+        setCurrentLog("The gas lamps of Edinburgh hiss in the haar. Another soul has met a grim end.");
+        setCurrentSpeaker(null);
+    }
+
+    useEffect(() => {
+        if (gameState === GameState.RESOLVED && resolution) {
+            if (resolution.isCorrect) {
+                soundService.playSuccess();
+            } else {
+                soundService.playFailure();
+            }
+        }
+    }, [gameState, resolution]);
+
+    useEffect(() => {
+        let clockInterval;
+        if (gameState === GameState.INVESTIGATING) {
+            clockInterval = window.setInterval(() => {
+                soundService.playClock();
+            }, 120000);
+        }
+        return () => {
+            if (clockInterval) {
+                clearInterval(clockInterval);
+            }
+        };
+    }, [gameState]);
+
+
+    const getTimelineIcon = (source) => {
+        switch(source) {
+            case 'Case Briefing':
+                return (
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-yellow-50" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" />
+                        <path fillRule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clipRule="evenodd" />
+                    </svg>
+                );
+            case 'Investigation':
+                return (
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-yellow-50" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
+                    </svg>
+                );
+            case "Innis's Nose":
+                 return (
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-yellow-50" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M10 3.5a.75.75 0 01.75.75v2.5a.75.75 0 01-1.5 0V4.25A.75.75 0 0110 3.5z" />
+                        <path fillRule="evenodd" d="M10 2a8 8 0 100 16 8 8 0 000-16zM3.863 5.433a.75.75 0 01.956-.44l3.28 1.406a.75.75 0 01-.512 1.385l-3.28-1.406a.75.75 0 01-.444-.945zM15.181 6.397a.75.75 0 01.513 1.385l-3.28 1.406a.75.75 0 01-.956-.44l-1.999-4.664a.75.75 0 011.385-.512l2.337 2.825z" clipRule="evenodd" />
+                    </svg>
+                );
+            default:
+                return null;
+        }
+    };
+
+    const renderGameState = () => {
+        if (gameState === GameState.START) {
+            return (
+                <div className="text-center">
+                    <h2 className="text-3xl font-serif-display text-purple-300 mb-2">Choose Your Challenge</h2>
+                    <p className="text-gray-400 mb-8 max-w-xl mx-auto">The difficulty affects the number of clues needed to make an accusation, and how cryptic those clues are.</p>
+                    <div className="flex flex-col sm:flex-row justify-center gap-4">
+                        <button onClick={() => startNewCase('Easy')} className="difficulty-button bg-green-700 hover:bg-green-600">
+                            <span className="font-bold text-xl">A Stroll in the Meadows</span>
+                            <span className="text-sm">(Easy: 1 Clue Needed)</span>
+                        </button>
+                        <button onClick={() => startNewCase('Medium')} className="difficulty-button bg-yellow-700 hover:bg-yellow-600">
+                             <span className="font-bold text-xl">A Proper Conundrum</span>
+                            <span className="text-sm">(Medium: 2 Clues Needed)</span>
+                        </button>
+                        <button onClick={() => startNewCase('Hard')} className="difficulty-button bg-red-800 hover:bg-red-700">
+                             <span className="font-bold text-xl">A Devil's Knot</span>
+                            <span className="text-sm">(Hard: 3 Clues Needed)</span>
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+        
+        const cluesFound = timeline.filter(e => e.type === 'CLUE').length;
+        const cluesNeeded = difficulty ? { Easy: 1, Medium: 2, Hard: 3 }[difficulty] : 2;
+        const canAccuse = cluesFound >= cluesNeeded;
+
+        if (currentCase) {
+             const speakerPortraitUrl = currentSpeaker
+                ? currentCase?.suspects.find(s => s.name === currentSpeaker)?.portraitUrl
+                : null;
+            return (
+                 <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+                    <div className="md:col-span-2 space-y-6">
+                        <div>
+                            <h2 className="text-4xl font-serif-display text-purple-300 border-b-2 border-purple-800 pb-2 mb-4">{currentCase.title}</h2>
+                            <div className="flex items-start space-x-6 bg-slate-900/30 p-4 rounded-lg">
+                                {speakerPortraitUrl && (
+                                    <img
+                                        src={speakerPortraitUrl}
+                                        alt={`Portrait of ${currentSpeaker}`}
+                                        className="w-24 h-24 rounded-full border-4 border-purple-400 object-cover object-top shadow-lg flex-shrink-0"
+                                    />
+                                )}
+                                <p className="text-lg italic text-gray-300 leading-relaxed pt-2 flex-1">{currentLog}</p>
+                            </div>
+                        </div>
+                        <div className="space-y-4">
+                             <h3 className="text-2xl font-serif-display text-gray-100">Your Next Move</h3>
+                             <p className="text-gray-400 italic text-sm">What path will your investigation take? Be specific. The powers that be will interpret your intent.</p>
+                             <form onSubmit={handleInvestigationSubmit} className="flex flex-col sm:flex-row gap-2">
+                                <input
+                                    type="text"
+                                    value={investigationInput}
+                                    onChange={(e) => setInvestigationInput(e.target.value)}
+                                    placeholder="e.g., 'Examine the victim's correspondence...'"
+                                    disabled={isLoading}
+                                    className="flex-grow bg-slate-900/50 border border-slate-600 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-purple-500 placeholder-gray-400 italic disabled:opacity-50"
+                                    aria-label="Enter your investigation action"
+                                />
+                                <button type="submit" disabled={isLoading || !investigationInput.trim()} className="action-button px-6">
+                                    Investigate
+                                </button>
+                             </form>
+
+                             <div className="pt-2">
+                                <button onClick={handleOpenAccusationModal} disabled={isLoading || !canAccuse} className="w-full action-button bg-red-700 hover:bg-red-600 disabled:bg-red-900/50 disabled:text-gray-500">
+                                    Make an Accusation {!canAccuse && `(${cluesNeeded - cluesFound} more ${cluesNeeded - cluesFound === 1 ? 'clue' : 'clues'} needed)`}
+                                </button>
+                            </div>
+                        </div>
+                         <InnisCompanion onAskInnis={handleAskInnis} disabled={isLoading} />
+                    </div>
+                    <div className="bg-yellow-900/30 p-4 rounded-lg shadow-inner">
+                        <h3 className="text-3xl font-serif-display text-yellow-200 border-b border-yellow-700 pb-2 mb-4">Deduction Board</h3>
+                        {timeline.length > 0 ? (
+                            <div className="relative border-l-2 border-dashed border-yellow-700/50 ml-3 pl-6 space-y-8">
+                                {timeline.map((event) => {
+                                    const isActive = activeEventId === event.id;
+                                    return (
+                                        <div key={event.id} className="relative">
+                                            <div
+                                                onClick={() => toggleEventDetails(event.id)}
+                                                className="absolute -left-[35px] top-0 h-8 w-8 rounded-full bg-purple-600 ring-4 ring-slate-800 flex items-center justify-center cursor-pointer transition-transform hover:scale-110"
+                                                role="button"
+                                                aria-expanded={isActive}
+                                                aria-controls={`event-details-${event.id}`}
+                                                aria-label={`Toggle details for ${event.source}`}
+                                            >
+                                                {getTimelineIcon(event.source)}
+                                            </div>
+                                            <div className="bg-yellow-100 text-stone-800 p-3 rounded-md shadow-sm transform -rotate-1">
+                                                <div
+                                                    onClick={() => toggleEventDetails(event.id)}
+                                                    className="flex justify-between items-center cursor-pointer"
+                                                    role="button"
+                                                    aria-expanded={isActive}
+                                                    aria-controls={`event-details-${event.id}`}
+                                                >
+                                                    <p className="font-bold text-stone-600 text-sm uppercase tracking-wider select-none">{event.source}</p>
+                                                    <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 text-stone-500 transition-transform duration-300 ${isActive ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                                    </svg>
+                                                </div>
+                                                <div
+                                                    id={`event-details-${event.id}`}
+                                                    className="grid transition-all duration-500 ease-in-out"
+                                                    style={{ gridTemplateRows: isActive ? '1fr' : '0fr' }}
+                                                >
+                                                    <div className="overflow-hidden">
+                                                        <p className="font-serif-display text-lg mt-2 pt-2 border-t border-stone-300/70">{event.text}</p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        ) : (
+                             <p className="text-yellow-200 italic">The board is clear... for now.</p>
+                        )}
+                    </div>
+                 </div>
+            );
+        }
+        return null;
+    };
+
+
+    return (
+        <div 
+            className="bg-slate-900 min-h-screen text-gray-200 font-sans p-4 sm:p-8 flex flex-col items-center transition-all duration-1000"
+            style={{
+                backgroundImage: `url(${backgroundUrl})`,
+                backgroundSize: 'cover',
+                backgroundPosition: 'center',
+                backgroundAttachment: 'fixed',
+            }}
+        >
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-0"></div>
+            
+            <div className="relative z-10 w-full flex flex-col items-center flex-grow">
+                <style>{`
+                    .action-button { background-color: #581c87; } .action-button:hover { background-color: #6b21a8; } .action-button:disabled { background-color: #3b0764; cursor: not-allowed; transform: scale(1); color: #9ca3af; } .action-button { color: white; font-weight: bold; padding: 0.75rem 1rem; border-radius: 0.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06); transition: all 0.3s; transform: perspective(1px) scale(1); } .action-button:not(:disabled):hover { transform: scale(1.05); }
+                    .difficulty-button { color: white; font-family: 'IM Fell English', serif; padding: 1rem 1.5rem; border-radius: 0.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06); transition: all 0.3s; transform: perspective(1px) scale(1); display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+                    .difficulty-button:hover { transform: scale(1.05); }
+                `}</style>
+
+                <header className="text-center mb-8">
+                    <h1 className="text-6xl font-serif-display text-gray-100 tracking-wider">McLevy's Conundrum</h1>
+                    <p className="text-purple-300 text-lg">Justice in the dark heart of Edinburgh</p>
+                </header>
+
+                <main className="w-full max-w-7xl bg-slate-800/80 rounded-lg shadow-2xl p-6 md:p-8 relative">
+                    {isLoading && <Loader message={loadingMessage} />}
+                    {error && <div className="bg-red-800 border border-red-500 text-white p-4 rounded-lg mb-4 text-center">{error}</div>}
+                    {renderGameState()}
+                </main>
+                
+                {gameState === GameState.ACCUSING && currentCase && (
+                    <Modal title="Who's the Guilty Party?" onClose={() => setGameState(GameState.INVESTIGATING)} maxWidth="max-w-6xl">
+                        <p className="text-gray-300 mb-6">Ye've gathered the evidence. Now point the finger. Be sure, for a soul's fate is at stake.</p>
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            {currentCase.suspects.map(s => (
+                                <div key={s.name} className="bg-slate-700/50 border border-slate-600 rounded-lg flex flex-row items-start shadow-lg p-4 transition-all duration-300 hover:border-purple-400 hover:shadow-purple-500/20 space-x-4 h-full">
+                                    <div>
+                                        {s.portraitUrl ? (
+                                            <img 
+                                                src={s.portraitUrl} 
+                                                alt={`Portrait of ${s.name}`} 
+                                                className="w-28 h-28 md:w-32 md:h-32 rounded-lg border-2 border-purple-600 object-cover object-top flex-shrink-0" 
+                                            />
+                                        ) : (
+                                            <div className="w-28 h-28 md:w-32 md:h-32 bg-slate-800 rounded-lg flex items-center justify-center flex-shrink-0">
+                                                <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
+                                                    <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                                                </svg>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    <div className="flex flex-col flex-1 h-full">
+                                        <div className="flex-grow">
+                                            <h4 className="font-serif-display text-2xl text-purple-300">{s.name}</h4>
+                                            <p className="text-sm italic text-gray-400 mb-3">{s.description}</p>
+                                            
+                                            <div className="space-y-3">
+                                                <p className="text-sm text-gray-300"><span className="font-bold text-gray-100">Motive:</span> {s.motive}</p>
+                                                <div>
+                                                    <p className="text-sm font-bold text-gray-100 mb-1">Their Statement:</p>
+                                                    <blockquote className="border-l-4 border-purple-600/50 pl-3">
+                                                        <p className="text-sm text-gray-400 font-serif-display italic">{s.statement}</p>
+                                                    </blockquote>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <button onClick={() => handleAccuse(s)} className="w-full bg-red-700 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg mt-4 transition-colors duration-200">
+                                            Accuse this Person
+                                        </button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </Modal>
+                )}
+
+                {gameState === GameState.RESOLVED && resolution && (
+                    <Modal title={resolution.isCorrect ? "Case Closed!" : "Justice Miscarried"}>
+                        <div className="space-y-4">
+                            <p className={`text-2xl font-serif-display ${resolution.isCorrect ? 'text-green-400' : 'text-red-400'}`}>
+                                {resolution.isCorrect ? "A righteous collar! Ye've found yer killer." : "The villain slipped through yer fingers this time."}
+                            </p>
+                            <p className="text-gray-300 leading-relaxed">{resolution.resolutionText}</p>
+                            <button onClick={resetGame} className="w-full bg-purple-700 hover:bg-purple-600 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-all duration-300">
+                                Another Case Awaits
+                            </button>
+                        </div>
+                    </Modal>
+                )}
+                
+                <SoundControl />
+
+                <footer className="text-center mt-auto pt-8 text-sm text-gray-400">
+                    <p>McLevy's Conundrum - A text-based adventure powered by Gemini. Inspired by the BBC Radio 4 series.</p>
+                </footer>
+            </div>
+        </div>
+    );
+};
+
+// --- From index.tsx ---
+const rootElement = document.getElementById('root');
+if (!rootElement) {
+  throw new Error("Could not find root element to mount to");
+}
+
+const root = ReactDOM.createRoot(rootElement);
+root.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+
+    </script>
   </body>
 </html>
