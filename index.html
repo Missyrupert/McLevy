@@ -168,10 +168,25 @@ const getAiClient = () => {
     if (geminiAiClient) {
         return geminiAiClient;
     }
-    if (!process.env.API_KEY) {
+
+    let apiKey;
+    try {
+        // This will throw a ReferenceError in the browser if 'process' is not defined,
+        // which is expected. We catch it to allow the app to show a friendly error.
+        apiKey = process.env.API_KEY;
+    } catch (e) {
+        if (e instanceof ReferenceError) {
+            // Silently catch the error. The check below will throw the user-facing error.
+        } else {
+            // Rethrow any other unexpected errors.
+            throw e;
+        }
+    }
+    
+    if (!apiKey) {
         throw new Error("API_KEY environment variable not set. The application cannot connect to Google AI services without it. Please ensure the key is configured in your execution environment.");
     }
-    geminiAiClient = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    geminiAiClient = new GoogleGenAI({ apiKey: apiKey });
     return geminiAiClient;
 };
 
