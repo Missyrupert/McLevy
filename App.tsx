@@ -33,10 +33,15 @@ const App: React.FC = () => {
     useEffect(() => {
         const updateVisualsAndSound = async () => {
             try {
+                // Set a default background immediately to avoid a flash
+                if (!backgroundUrl) {
+                     setBackgroundUrl('data:image/gif;base64,R0lGODlhAQABAIAAAAUEBAAAACwAAAAAAQABAAACAkQBADs='); // A dark purple pixel
+                }
                 const imageUrl = await generateBackgroundImage(gameState);
                 setBackgroundUrl(imageUrl);
             } catch (err) {
                 console.error("Failed to update background:", err);
+                handleApiError(err);
             }
             soundService.playGameStateAmbience(gameState);
         };

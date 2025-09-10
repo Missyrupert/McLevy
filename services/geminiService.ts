@@ -1,11 +1,20 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import type { Case, Difficulty, Suspect } from '../types';
 
-if (!process.env.API_KEY) {
-    throw new Error("API_KEY environment variable not set");
-}
+let ai: GoogleGenAI | null = null;
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const getAiClient = (): GoogleGenAI => {
+    if (ai) {
+        return ai;
+    }
+    if (!process.env.API_KEY) {
+        throw new Error("API_KEY environment variable not set. The application cannot connect to Google AI services without it. Please ensure the key is configured in your execution environment.");
+    }
+    ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    return ai;
+};
+
+
 const backgroundImageCache = new Map<string, string>();
 
 const caseSchema = {
@@ -36,6 +45,7 @@ const caseSchema = {
 
 
 export const generateNewCase = async (): Promise<Case> => {
+    const ai = getAiClient();
     const prompt = `You are a writer for the BBC radio drama 'McLevy'. Generate a new, brief murder mystery case for Detective McLevy in 19th-century Edinburgh. Use the vernacular and style of the show. The case should have a victim, a location, and a mysterious circumstance. Create exactly three plausible suspects. For each suspect, provide their name, a brief physical/personality description, a plausible motive, and a short statement or alibi. Finally, secretly decide which one is the true culprit.`;
 
     const response = await ai.models.generateContent({
@@ -62,6 +72,7 @@ export const generateNewCase = async (): Promise<Case> => {
 };
 
 export const generateSuspectPortrait = async (description: string): Promise<string> => {
+    const ai = getAiClient();
     const prompt = `A character portrait of a person in Victorian Edinburgh, Scotland. The person is described as: "${description}". The style should be a gritty, realistic, slightly faded 19th-century photograph or oil painting. Close-up on the face, shoulders up. No text, watermarks, or frames.`;
 
     try {
@@ -91,7 +102,8 @@ export const generateBackgroundImage = async (gameState: string): Promise<string
     if (backgroundImageCache.has(gameState)) {
         return backgroundImageCache.get(gameState)!;
     }
-
+    
+    const ai = getAiClient();
     let prompt = '';
     switch (gameState) {
         case 'INVESTIGATING':
@@ -136,6 +148,7 @@ export const generateBackgroundImage = async (gameState: string): Promise<string
 
 
 export const investigateAction = async (caseDetails: Case, action: string, difficulty: Difficulty): Promise<{description: string, clue: string, speaker?: string}> => {
+    const ai = getAiClient();
     let actionPreamble = `Detective McLevy decides to: "${action}".`;
 
     if (action === "Confront Dewi MacOlacost") {
@@ -187,6 +200,7 @@ export const investigateAction = async (caseDetails: Case, action: string, diffi
 };
 
 export const getInnisHint = async (caseDetails: Case, difficulty: Difficulty): Promise<{hint: string}> => {
+    const ai = getAiClient();
     let hintComplexityInstruction = "It should be a subtle, animal-level observation that provides a clue."; // Medium default
     switch (difficulty) {
         case 'Easy':
@@ -228,6 +242,7 @@ export const getInnisHint = async (caseDetails: Case, difficulty: Difficulty): P
 };
 
 export const resolveCase = async (caseDetails: Case, accusedSuspectName: string): Promise<{isCorrect: boolean, resolutionText: string}> => {
+    const ai = getAiClient();
     const isCorrect = accusedSuspectName === caseDetails.culprit;
 
     const prompt = `You are a writer for the BBC radio drama 'McLevy'.
