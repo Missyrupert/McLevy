@@ -1,4 +1,4 @@
-import { GameState } from "../types";
+import { GameState } from "../types.ts";
 
 const sounds = {
     ambience: 'https://actions.google.com/sounds/v1/ambiences/city_street_with_carriages.ogg',

@@ -1,12 +1,12 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { GameState } from './types';
-import type { Case, Resolution, Suspect, TimelineEvent, Difficulty } from './types';
-import { generateNewCase, investigateAction, getInnisHint, resolveCase, generateSuspectPortrait, generateBackgroundImage } from './services/geminiService';
-import Loader from './components/Loader';
-import InnisCompanion from './components/InnisCompanion';
-import Modal from './components/Modal';
-import { soundService } from './services/soundService';
-import SoundControl from './components/SoundControl';
+import { GameState } from './types.ts';
+import type { Case, Resolution, Suspect, TimelineEvent, Difficulty } from './types.ts';
+import { generateNewCase, investigateAction, getInnisHint, resolveCase, generateSuspectPortrait, generateBackgroundImage } from './services/geminiService.ts';
+import Loader from './components/Loader.tsx';
+import InnisCompanion from './components/InnisCompanion.tsx';
+import Modal from './components/Modal.tsx';
+import { soundService } from './services/soundService.ts';
+import SoundControl from './components/SoundControl.tsx';
 
 const App: React.FC = () => {
     const [gameState, setGameState] = useState<GameState>(GameState.START);

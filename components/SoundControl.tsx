@@ -1,6 +1,6 @@
 
 import React, { useState, useCallback } from 'react';
-import { soundService } from '../services/soundService';
+import { soundService } from '../services/soundService.ts';
 
 const SoundControl: React.FC = () => {
     const [isMuted, setIsMuted] = useState(soundService.getIsMuted());

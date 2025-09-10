@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import type { Case, Difficulty, Suspect } from '../types';
+import type { Case, Difficulty, Suspect } from '../types.ts';
 
 let ai: GoogleGenAI | null = null;
 
