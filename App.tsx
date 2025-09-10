@@ -21,6 +21,8 @@ const App: React.FC = () => {
     const [loadingMessage, setLoadingMessage] = useState<string>('');
     const [resolution, setResolution] = useState<Resolution | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [investigationInput, setInvestigationInput] = useState<string>('');
+
 
     const handleApiError = (err: unknown) => {
         const message = err instanceof Error ? err.message : "An unknown error occurred.";
@@ -110,6 +112,14 @@ const App: React.FC = () => {
             setIsLoading(false);
         }
     }, [currentCase, timeline, difficulty]);
+
+    const handleInvestigationSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (investigationInput.trim() && !isLoading) {
+            handleInvestigation(investigationInput.trim());
+            setInvestigationInput('');
+        }
+    };
 
     const handleAskInnis = useCallback(async () => {
         if (!currentCase || !difficulty) return;
@@ -205,20 +215,20 @@ const App: React.FC = () => {
         switch(source) {
             case 'Case Briefing':
                 return (
-                    <svg xmlns="http://www.w.org/2000/svg" className="h-5 w-5 text-yellow-50" viewBox="0 0 20 20" fill="currentColor">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-yellow-50" viewBox="0 0 20 20" fill="currentColor">
                         <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" />
                         <path fillRule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clipRule="evenodd" />
                     </svg>
                 );
             case 'Investigation':
                 return (
-                    <svg xmlns="http://www.w.org/2000/svg" className="h-5 w-5 text-yellow-50" viewBox="0 0 20 20" fill="currentColor">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-yellow-50" viewBox="0 0 20 20" fill="currentColor">
                         <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
                     </svg>
                 );
             case "Innis's Nose":
                  return (
-                    <svg xmlns="http://www.w.org/2000/svg" className="h-5 w-5 text-yellow-50" viewBox="0 0 20 20" fill="currentColor">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-yellow-50" viewBox="0 0 20 20" fill="currentColor">
                         <path d="M10 3.5a.75.75 0 01.75.75v2.5a.75.75 0 01-1.5 0V4.25A.75.75 0 0110 3.5z" />
                         <path fillRule="evenodd" d="M10 2a8 8 0 100 16 8 8 0 000-16zM3.863 5.433a.75.75 0 01.956-.44l3.28 1.406a.75.75 0 01-.512 1.385l-3.28-1.406a.75.75 0 01-.444-.945zM15.181 6.397a.75.75 0 01.513 1.385l-3.28 1.406a.75.75 0 01-.956-.44l-1.999-4.664a.75.75 0 011.385-.512l2.337 2.825z" clipRule="evenodd" />
                     </svg>
@@ -278,13 +288,23 @@ const App: React.FC = () => {
                             </div>
                         </div>
                         <div className="space-y-4">
-                             <h3 className="text-2xl font-serif-display text-gray-100">Your Actions</h3>
-                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                <button onClick={() => handleInvestigation("Scour the crime scene for evidence")} disabled={isLoading} className="action-button">Scour the Scene</button>
-                                <button onClick={() => handleInvestigation("Question the witnesses and locals")} disabled={isLoading} className="action-button">Question Witnesses</button>
-                                <button onClick={() => handleInvestigation("Consult with Jean Brash at the local establishment")} disabled={isLoading} className="action-button">Consult wi' Jean Brash</button>
-                                <button onClick={() => handleInvestigation("Confront Dewi MacOlacost")} disabled={isLoading} className="action-button bg-teal-800 hover:bg-teal-700 disabled:bg-teal-900/50">Confront Dewi MacOlacost</button>
-                             </div>
+                             <h3 className="text-2xl font-serif-display text-gray-100">Your Next Move</h3>
+                             <p className="text-gray-400 italic text-sm">What path will your investigation take? Be specific. The powers that be will interpret your intent.</p>
+                             <form onSubmit={handleInvestigationSubmit} className="flex flex-col sm:flex-row gap-2">
+                                <input
+                                    type="text"
+                                    value={investigationInput}
+                                    onChange={(e) => setInvestigationInput(e.target.value)}
+                                    placeholder="e.g., 'Examine the victim's correspondence...'"
+                                    disabled={isLoading}
+                                    className="flex-grow bg-slate-900/50 border border-slate-600 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-purple-500 placeholder-gray-400 italic disabled:opacity-50"
+                                    aria-label="Enter your investigation action"
+                                />
+                                <button type="submit" disabled={isLoading || !investigationInput.trim()} className="action-button px-6">
+                                    Investigate
+                                </button>
+                             </form>
+
                              <div className="pt-2">
                                 <button onClick={handleOpenAccusationModal} disabled={isLoading || !canAccuse} className="w-full action-button bg-red-700 hover:bg-red-600 disabled:bg-red-900/50 disabled:text-gray-500">
                                     Make an Accusation {!canAccuse && `(${cluesNeeded - cluesFound} more ${cluesNeeded - cluesFound === 1 ? 'clue' : 'clues'} needed)`}
