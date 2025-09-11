@@ -196,10 +196,10 @@ const backgroundImageCache = new Map();
 const caseSchema = {
     type: Type.OBJECT,
     properties: {
-        title: { type: Type.STRING, description: "A catchy, noir-style title for the case." },
+        title: { type: Type.STRING, description: "A catchy, noir-style title for the case, reflecting the provided theme." },
         victim: { type: Type.STRING, description: "The name and occupation of the victim." },
         location: { type: Type.STRING, description: "The specific location in 19th-century Edinburgh where the crime occurred." },
-        summary: { type: Type.STRING, description: "A one-paragraph summary of the crime scene and initial situation, written in the vernacular of the McLevy series." },
+        summary: { type: Type.STRING, description: "A one-paragraph summary of the crime scene and initial situation, written in the vernacular of the McLevy series and reflecting the provided theme." },
         suspects: {
             type: Type.ARRAY,
             items: {
@@ -207,7 +207,7 @@ const caseSchema = {
                 properties: {
                     name: { type: Type.STRING, description: "The full name of the suspect." },
                     description: { type: Type.STRING, description: "A one-sentence physical or personality description of the suspect." },
-                    motive: { type: Type.STRING, description: "A plausible motive for this suspect." },
+                    motive: { type: Type.STRING, description: "A plausible motive for this suspect related to the case theme." },
                     statement: { type: Type.STRING, description: "A brief alibi or statement from the suspect, in quotes." }
                 },
                 required: ['name', 'description', 'motive', 'statement']
@@ -219,9 +219,9 @@ const caseSchema = {
     required: ['title', 'victim', 'location', 'summary', 'suspects', 'culprit']
 };
 
-const generateNewCase = async () => {
+const generateNewCase = async (theme) => {
     const ai = getAiClient();
-    const prompt = `You are a writer for the BBC radio drama 'McLevy'. Generate a new, brief murder mystery case for Detective McLevy in 19th-century Edinburgh. Use the vernacular and style of the show. The case should have a victim, a location, and a mysterious circumstance. Create exactly three plausible suspects. For each suspect, provide their name, a brief physical/personality description, a plausible motive, and a short statement or alibi. Finally, secretly decide which one is the true culprit.`;
+    const prompt = `You are a writer for the BBC radio drama 'McLevy'. Generate a new, brief murder mystery case for Detective McLevy in 19th-century Edinburgh, based on the following theme: "${theme}". The case title, summary, victim, location, and suspect motives should all strongly reflect this theme. Use the vernacular and style of the show. The case should have a victim, a location, and a mysterious circumstance. Create exactly three plausible suspects. For each suspect, provide their name, a brief physical/personality description, a plausible motive, and a short statement or alibi. Finally, secretly decide which one is the true culprit.`;
 
     const response = await ai.models.generateContent({
         model: "gemini-2.5-flash",
@@ -360,7 +360,8 @@ const investigateAction = async (caseDetails, action, difficulty) => {
                     speaker: { type: Type.STRING, description: "If the description contains a quote from one of the suspects, this is their full name. Otherwise, this field should be omitted." }
                 },
                 required: ['description', 'clue']
-            }
+            },
+            thinkingConfig: { thinkingBudget: 0 }
         }
     });
 
@@ -402,7 +403,8 @@ const getInnisHint = async (caseDetails, difficulty) => {
                     hint: { type: Type.STRING, description: "The cryptic, one-sentence hint from Innis." }
                 },
                 required: ['hint']
-            }
+            },
+            thinkingConfig: { thinkingBudget: 0 }
         }
     });
 
@@ -525,6 +527,21 @@ const SoundControl = () => {
 };
 
 // --- From App.tsx ---
+const CASE_THEMES = [
+  'The Case of the Poisoned Pastry',
+  'The Mystery of the Missing Monocle',
+  'The Scandal of the Smuggled Silk',
+  'The Haunting of the High Street',
+  'The Secret of the Seven Dials',
+  'The Brewer\'s Bitter End',
+  'The Affair of the Absconded Artist',
+  'The Riddle of the Rusty Razor',
+  'The Ghost of Greyfriars Kirkyard',
+  'The Coded Message in the Cobbler\'s Shoe',
+  'The Unseen Antagonist at the Theatre Royal',
+  'The Curious Case of the Clockmaker\'s Chime',
+];
+
 const App = () => {
     const [gameState, setGameState] = useState(GameState.START);
     const [difficulty, setDifficulty] = useState(null);
@@ -539,6 +556,9 @@ const App = () => {
     const [resolution, setResolution] = useState(null);
     const [error, setError] = useState(null);
     const [investigationInput, setInvestigationInput] = useState('');
+    const [portraitsLoading, setPortraitsLoading] = useState(false);
+    const [selectedTheme, setSelectedTheme] = useState(null);
+    const [presentedThemes, setPresentedThemes] = useState([]);
 
 
     const handleApiError = (err) => {
@@ -546,33 +566,47 @@ const App = () => {
         setError(message);
         setIsLoading(false);
     };
+    
+    const presentNewThemes = useCallback(() => {
+        const shuffled = [...CASE_THEMES].sort(() => 0.5 - Math.random());
+        setPresentedThemes(shuffled.slice(0, 3));
+    }, []);
 
     useEffect(() => {
-        const updateVisualsAndSound = async () => {
-            try {
-                if (!backgroundUrl) {
-                     setBackgroundUrl('data:image/gif;base64,R0lGODlhAQABAIAAAAUEBAAAACwAAAAAAQABAAACAkQBADs=');
-                }
-                const imageUrl = await generateBackgroundImage(gameState);
+        if (gameState === GameState.START) {
+            presentNewThemes();
+        }
+    }, [gameState, presentNewThemes]);
+
+    useEffect(() => {
+        if (!backgroundUrl) {
+            setBackgroundUrl('data:image/gif;base64,R0lGODlhAQABAIAAAAUEBAAAACwAAAAAAQABAAACAkQBADs=');
+        }
+        
+        generateBackgroundImage(gameState)
+            .then(imageUrl => {
                 setBackgroundUrl(imageUrl);
-            } catch (err) {
+            })
+            .catch(err => {
                 console.error("Failed to update background:", err);
                 handleApiError(err);
-            }
-            soundService.playGameStateAmbience(gameState);
-        };
-        updateVisualsAndSound();
+            });
+            
+        soundService.playGameStateAmbience(gameState);
     }, [gameState]);
 
-    const startNewCase = useCallback(async (selectedDifficulty) => {
+    const startNewCase = useCallback(async (selectedDifficulty, theme) => {
         setDifficulty(selectedDifficulty);
         soundService.playClick();
         setLoadingMessage("Consultin' wi' the powers that be...");
         setIsLoading(true);
         setError(null);
         setResolution(null);
+        setPortraitsLoading(true);
+
         try {
-            const newCase = await generateNewCase();
+            const newCase = await generateNewCase(theme);
+            
             setCurrentCase(newCase);
             const initialTimeline = [{
                 id: 1,
@@ -582,25 +616,29 @@ const App = () => {
             }];
             setTimeline(initialTimeline);
             setActiveEventId(1);
-
-            setLoadingMessage("Sketchin' the persons of interest...");
-            const suspectsWithPortraits = await Promise.all(
-                newCase.suspects.map(async (suspect) => {
-                    const portraitUrl = await generateSuspectPortrait(suspect.description);
-                    return { ...suspect, portraitUrl };
-                })
-            );
-            
-            const caseWithPortraits = { ...newCase, suspects: suspectsWithPortraits };
-            setCurrentCase(caseWithPortraits);
-
             setCurrentLog(newCase.summary);
             setCurrentSpeaker(null);
             setGameState(GameState.INVESTIGATING);
+            setIsLoading(false);
+
+            Promise.all(
+                newCase.suspects.map(suspect => generateSuspectPortrait(suspect.description))
+            ).then(portraitUrls => {
+                const suspectsWithPortraits = newCase.suspects.map((suspect, index) => ({
+                    ...suspect,
+                    portraitUrl: portraitUrls[index],
+                }));
+                const caseWithPortraits = { ...newCase, suspects: suspectsWithPortraits };
+                setCurrentCase(caseWithPortraits);
+            }).catch(err => {
+                console.error("Failed to generate suspect portraits in background:", err);
+            }).finally(() => {
+                setPortraitsLoading(false);
+            });
+
         } catch (err) {
             handleApiError(err);
-        } finally {
-            setIsLoading(false);
+            setPortraitsLoading(false);
         }
     }, []);
 
@@ -703,6 +741,7 @@ const App = () => {
         setResolution(null);
         setError(null);
         setDifficulty(null);
+        setSelectedTheme(null);
         setCurrentLog("The gas lamps of Edinburgh hiss in the haar. Another soul has met a grim end.");
         setCurrentSpeaker(null);
     }
@@ -761,31 +800,59 @@ const App = () => {
 
     const renderGameState = () => {
         if (gameState === GameState.START) {
-            return (
-                <div className="text-center">
-                    <h2 className="text-3xl font-serif-display text-purple-300 mb-2">Choose Your Challenge</h2>
-                    <p className="text-gray-400 mb-8 max-w-xl mx-auto">The difficulty affects the number of clues needed to make an accusation, and how cryptic those clues are.</p>
-                    <div className="flex flex-col sm:flex-row justify-center gap-4">
-                        <button onClick={() => startNewCase('Easy')} className="difficulty-button bg-green-700 hover:bg-green-600">
-                            <span className="font-bold text-xl">A Stroll in the Meadows</span>
-                            <span className="text-sm">(Easy: 1 Clue Needed)</span>
-                        </button>
-                        <button onClick={() => startNewCase('Medium')} className="difficulty-button bg-yellow-700 hover:bg-yellow-600">
-                             <span className="font-bold text-xl">A Proper Conundrum</span>
-                            <span className="text-sm">(Medium: 2 Clues Needed)</span>
-                        </button>
-                        <button onClick={() => startNewCase('Hard')} className="difficulty-button bg-red-800 hover:bg-red-700">
-                             <span className="font-bold text-xl">A Devil's Knot</span>
-                            <span className="text-sm">(Hard: 3 Clues Needed)</span>
+            if (!selectedTheme) {
+                 return (
+                    <div className="text-center">
+                        <h2 className="text-3xl font-serif-display text-purple-300 mb-2">A New Conundrum Arises...</h2>
+                        <p className="text-gray-400 mb-8 max-w-xl mx-auto">The streets of Edinburgh whisper of a new misdeed. Choose a case to investigate.</p>
+                        <div className="flex flex-col justify-center gap-4">
+                            {presentedThemes.map(theme => (
+                                <button key={theme} onClick={() => { soundService.playClick(); setSelectedTheme(theme); }} className="theme-button bg-slate-700 hover:bg-slate-600">
+                                    <span className="font-bold text-xl">{theme}</span>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                );
+            } else {
+                return (
+                     <div className="text-center">
+                        <h2 className="text-3xl font-serif-display text-purple-300 mb-2">You've chosen: "{selectedTheme}"</h2>
+                        <p className="text-gray-400 mb-8 max-w-xl mx-auto">Now, choose your challenge. The difficulty affects how many clues are needed, and how cryptic they are.</p>
+                        <div className="flex flex-col sm:flex-row justify-center gap-4">
+                            <button onClick={() => startNewCase('Easy', selectedTheme)} className="difficulty-button bg-green-700 hover:bg-green-600">
+                                <span className="font-bold text-xl">A Stroll in the Meadows</span>
+                                <span className="text-sm">(Easy: 1 Clue Needed)</span>
+                            </button>
+                            <button onClick={() => startNewCase('Medium', selectedTheme)} className="difficulty-button bg-yellow-700 hover:bg-yellow-600">
+                                <span className="font-bold text-xl">A Proper Conundrum</span>
+                                <span className="text-sm">(Medium: 2 Clues Needed)</span>
+                            </button>
+                            <button onClick={() => startNewCase('Hard', selectedTheme)} className="difficulty-button bg-red-800 hover:bg-red-700">
+                                <span className="font-bold text-xl">A Devil's Knot</span>
+                                <span className="text-sm">(Hard: 3 Clues Needed)</span>
+                            </button>
+                        </div>
+                        <button onClick={() => setSelectedTheme(null)} className="mt-6 text-purple-300 hover:text-purple-200 text-sm">
+                           &larr; Choose a different case
                         </button>
                     </div>
-                </div>
-            );
+                )
+            }
         }
         
         const cluesFound = timeline.filter(e => e.type === 'CLUE').length;
         const cluesNeeded = difficulty ? { Easy: 1, Medium: 2, Hard: 3 }[difficulty] : 2;
         const canAccuse = cluesFound >= cluesNeeded;
+        
+        const getAccusationButtonText = () => {
+            if (portraitsLoading) return "Awaiting Suspect Portraits...";
+            if (!canAccuse) {
+                const needed = cluesNeeded - cluesFound;
+                return `Make an Accusation (${needed} more ${needed === 1 ? 'clue' : 'clues'} needed)`;
+            }
+            return "Make an Accusation";
+        };
 
         if (currentCase) {
              const speakerPortraitUrl = currentSpeaker
@@ -826,8 +893,8 @@ const App = () => {
                              </form>
 
                              <div className="pt-2">
-                                <button onClick={handleOpenAccusationModal} disabled={isLoading || !canAccuse} className="w-full action-button bg-red-700 hover:bg-red-600 disabled:bg-red-900/50 disabled:text-gray-500">
-                                    Make an Accusation {!canAccuse && `(${cluesNeeded - cluesFound} more ${cluesNeeded - cluesFound === 1 ? 'clue' : 'clues'} needed)`}
+                                <button onClick={handleOpenAccusationModal} disabled={isLoading || !canAccuse || portraitsLoading} className="w-full action-button bg-red-700 hover:bg-red-600 disabled:bg-red-900/50 disabled:text-gray-500">
+                                    {getAccusationButtonText()}
                                 </button>
                             </div>
                         </div>
@@ -906,6 +973,8 @@ const App = () => {
                     .action-button { background-color: #581c87; } .action-button:hover { background-color: #6b21a8; } .action-button:disabled { background-color: #3b0764; cursor: not-allowed; transform: scale(1); color: #9ca3af; } .action-button { color: white; font-weight: bold; padding: 0.75rem 1rem; border-radius: 0.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06); transition: all 0.3s; transform: perspective(1px) scale(1); } .action-button:not(:disabled):hover { transform: scale(1.05); }
                     .difficulty-button { color: white; font-family: 'IM Fell English', serif; padding: 1rem 1.5rem; border-radius: 0.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06); transition: all 0.3s; transform: perspective(1px) scale(1); display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
                     .difficulty-button:hover { transform: scale(1.05); }
+                    .theme-button { color: white; font-family: 'IM Fell English', serif; padding: 1rem 1.5rem; border-radius: 0.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06); transition: all 0.3s; transform: perspective(1px) scale(1); text-align: center; border: 1px solid #475569; }
+                    .theme-button:hover { transform: scale(1.05); border-color: #a78bfa; }
                 `}</style>
 
                 <header className="text-center mb-8">
